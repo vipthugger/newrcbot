@@ -42,7 +42,7 @@ const SPAM_PATTERNS = [
 
 // Allowed commands
 const ALLOWED_COMMANDS = [
-  '/resale_topic', '/notification', '/report', '/resetcd', '/changecd', 
+  '/resale_topic', '/resale', '/notification', '/report', '/resetcd', '/changecd', 
   '/set_report_chat', '/myprofile', '/perks', '/top', '/addxp', '/removexp', 
   '/setrank', '/resetxp', '/set', '/unset', '/admsub'
 ];
@@ -138,6 +138,7 @@ const MEDIA_GROUP_WAIT_MS = 2000;
 export class ResaleBot {
   private bot: Telegraf<BotContext>;
   private resaleTopicId: number | null = null;
+  private resaleMarketChatId: number | null = null;
   private subCheckInterval: ReturnType<typeof setInterval> | null = null;
   private notifiedExpiring: Set<number> = new Set();
 
@@ -248,6 +249,7 @@ export class ResaleBot {
   private setupHandlers() {
     // Admin Commands
     this.bot.command("resale_topic", this.handleSetResaleTopic.bind(this));
+    this.bot.command("resale", this.handleSetResaleMarket.bind(this));
     this.bot.command("set", this.handleSetSubscription.bind(this));
     this.bot.command("unset", this.handleUnsetSubscription.bind(this));
     this.bot.command("resetcd", this.handleResetCooldown.bind(this));
@@ -295,6 +297,39 @@ export class ResaleBot {
       }
     } catch (e) {
       console.error("Error in resale_topic:", e);
+    }
+  }
+
+  private async handleSetResaleMarket(ctx: BotContext) {
+    if (!ctx.from || !ctx.chat) return;
+    
+    try {
+      const isAdmin = await this.isAdmin(ctx);
+      if (!isAdmin) {
+        try { await ctx.deleteMessage(); } catch {}
+        return ctx.reply("❌ Ця команда тільки для адміністраторів.");
+      }
+
+      const msg = ctx.message;
+      const args = msg && 'text' in msg ? msg.text.split(" ").slice(1) : [];
+      
+      if (args.length >= 1) {
+        const chatId = parseInt(args[0]);
+        if (isNaN(chatId)) {
+          return ctx.reply("❌ Невірний ID групи. Використання: /resale -1001234567890");
+        }
+        this.resaleMarketChatId = chatId;
+        console.log(`Resale market chat set to ${this.resaleMarketChatId} by @${ctx.from.username}`);
+        try { await ctx.deleteMessage(); } catch {}
+        return ctx.reply(`✅ Market група встановлена (ID: ${chatId}). Бот модеруватиме оголошення в цій групі.`);
+      }
+      
+      this.resaleMarketChatId = ctx.chat.id;
+      console.log(`Resale market chat set to ${this.resaleMarketChatId} (current chat) by @${ctx.from.username}`);
+      try { await ctx.deleteMessage(); } catch {}
+      await ctx.reply(RULES_TEXT, { parse_mode: "HTML" });
+    } catch (e) {
+      console.error("Error in resale:", e);
     }
   }
 
@@ -717,11 +752,15 @@ export class ResaleBot {
       await this.processXp(ctx);
     }
 
-    // Skip if no resale topic set
-    if (this.resaleTopicId === null) return;
+    // Check if message is in resale topic OR in market chat
+    const isInResaleTopic = this.resaleTopicId !== null 
+      && 'message_thread_id' in msg 
+      && msg.message_thread_id === this.resaleTopicId;
+    const isInMarketChat = this.resaleMarketChatId !== null 
+      && ctx.chat.id === this.resaleMarketChatId;
 
-    // Only process messages in the resale topic
-    if (!('message_thread_id' in msg) || msg.message_thread_id !== this.resaleTopicId) return;
+    // Skip if not in any moderated zone
+    if (!isInResaleTopic && !isInMarketChat) return;
 
     // Skip bot messages
     if (ctx.from.is_bot) return;
